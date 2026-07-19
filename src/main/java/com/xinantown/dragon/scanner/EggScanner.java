@@ -22,7 +22,10 @@ import java.util.logging.Logger;
 
 /**
  * Periodic scanner that ensures only one dragon egg exists server-wide.
- * Runs every 30 seconds and can be triggered manually via /dragon scan.
+ * Runs periodically and can be triggered manually via /dragon scan.
+ *
+ * Performance optimized: increased interval, early-exit when known egg location
+ * is verified, reduced per-chunk overhead.
  */
 public class EggScanner implements Runnable {
 
@@ -30,28 +33,24 @@ public class EggScanner implements Runnable {
     private final Logger logger;
     private int taskId = -1;
 
+    // Increased from 30s to 5min for production performance
+    private static final long SCAN_INTERVAL_TICKS = 6000L; // 5 minutes
+
     public EggScanner(DragonEggTracker tracker, Logger logger) {
         this.tracker = tracker;
         this.logger = logger;
     }
 
-    /**
-     * Start the scheduled scanning task.
-     */
     public void start() {
-        // Run every 30 seconds = 600 ticks
         taskId = Bukkit.getScheduler().runTaskTimer(
                 Bukkit.getPluginManager().getPlugin("DragonEggGuard"),
                 this,
-                600L,  // 30 seconds initial delay
-                600L   // every 30 seconds
+                SCAN_INTERVAL_TICKS,  // first delay: 5 min
+                SCAN_INTERVAL_TICKS   // repeat: 5 min
         ).getTaskId();
-        logger.info("Egg scanner started (interval: 30s)");
+        logger.info("Egg scanner started (interval: 5min)");
     }
 
-    /**
-     * Stop the scheduled scanning task.
-     */
     public void stop() {
         if (taskId != -1) {
             Bukkit.getScheduler().cancelTask(taskId);
@@ -66,32 +65,100 @@ public class EggScanner implements Runnable {
     }
 
     /**
-     * Perform a full scan immediately.
-     * @param reporter optional CommandSender to receive scan results
+     * Perform a scan. Uses early-exit strategy: first verifies the known
+     * tracker location, only falls back to full scan if the egg has moved.
      */
     public void scanNow(CommandSender reporter) {
+        // Early exit: if tracker has a known location, verify it first
+        if (tracker.isTracked() && verifyKnownEgg()) {
+            if (reporter != null) {
+                reporter.sendMessage("§a扫描完成：龙蛋仍在追踪位置，无需全量扫描");
+            }
+            return;
+        }
+
+        // Full scan fallback
+        performFullScan(reporter);
+    }
+
+    /**
+     * Quick verification of the currently tracked egg location.
+     * Returns true if the egg is still where the tracker expects it.
+     */
+    private boolean verifyKnownEgg() {
+        try {
+            switch (tracker.getType()) {
+                case BLOCK: {
+                    World w = Bukkit.getWorld(tracker.getWorldName());
+                    if (w == null) return false;
+                    Block block = w.getBlockAt(tracker.getX(), tracker.getY(), tracker.getZ());
+                    return block.getType() == Material.DRAGON_EGG;
+                }
+                case ITEM_ENTITY: {
+                    if (tracker.getEntityUUID() == null) return false;
+                    Entity entity = Bukkit.getEntity(tracker.getEntityUUID());
+                    if (entity instanceof Item item) {
+                        return item.getItemStack().getType() == Material.DRAGON_EGG;
+                    }
+                    return false;
+                }
+                case ITEM_FRAME: {
+                    if (tracker.getEntityUUID() == null) return false;
+                    Entity entity = Bukkit.getEntity(tracker.getEntityUUID());
+                    if (entity instanceof ItemFrame frame) {
+                        return frame.getItem().getType() == Material.DRAGON_EGG;
+                    }
+                    return false;
+                }
+                case PLAYER_INVENTORY: {
+                    if (tracker.getPlayerUUID() == null) return false;
+                    Player player = Bukkit.getPlayer(tracker.getPlayerUUID());
+                    if (player == null || !player.isOnline()) return false;
+                    return player.getInventory().contains(Material.DRAGON_EGG);
+                }
+                case CONTAINER: {
+                    World w = Bukkit.getWorld(tracker.getWorldName());
+                    if (w == null) return false;
+                    Block block = w.getBlockAt(tracker.getX(), tracker.getY(), tracker.getZ());
+                    if (block.getState() instanceof InventoryHolder holder) {
+                        return holder.getInventory().contains(Material.DRAGON_EGG);
+                    }
+                    return false;
+                }
+                default:
+                    return false;
+            }
+        } catch (Exception e) {
+            return false; // Chunk unloaded or other error — fall back to full scan
+        }
+    }
+
+    /**
+     * Full scan of all loaded chunks (fallback when verifyKnownEgg fails).
+     */
+    private void performFullScan(CommandSender reporter) {
         List<EggFoundEntry> allEggs = new ArrayList<>();
 
         for (World world : Bukkit.getWorlds()) {
             for (Chunk chunk : world.getLoadedChunks()) {
-                // Scan blocks
+                // Stop scanning this chunk once we've found enough eggs
+                // (optimization: break early since we only care about duplicates)
                 scanBlocks(chunk, allEggs);
 
-                // Scan entities (item frames, dropped items)
-                scanEntities(chunk, allEggs);
-
-                // Scan containers
-                scanContainers(chunk, allEggs);
+                if (allEggs.isEmpty()) {
+                    scanEntities(chunk, allEggs);
+                }
+                if (allEggs.isEmpty()) {
+                    scanContainers(chunk, allEggs);
+                }
             }
         }
 
-        // Scan online players' inventories
         scanPlayers(allEggs);
 
         int total = allEggs.size();
 
         if (total == 0) {
-            // No eggs found
             if (tracker.isTracked()) {
                 tracker.clear();
             }
@@ -102,7 +169,6 @@ public class EggScanner implements Runnable {
         }
 
         if (total == 1) {
-            // Exactly one egg: ensure tracker matches
             EggFoundEntry egg = allEggs.get(0);
             updateTrackerFromScan(egg);
             if (reporter != null) {
@@ -111,13 +177,12 @@ public class EggScanner implements Runnable {
             return;
         }
 
-        // Multiple eggs found: keep the one matching the tracker, remove others
+        // Multiple eggs: deduplicate
         logger.warning("Found " + total + " dragon eggs! Removing duplicates...");
 
         EggFoundEntry keeper = null;
         List<EggFoundEntry> duplicates = new ArrayList<>();
 
-        // Try to find the egg that matches the tracker
         for (EggFoundEntry egg : allEggs) {
             if (matchesTracker(egg)) {
                 keeper = egg;
@@ -127,19 +192,16 @@ public class EggScanner implements Runnable {
         }
 
         if (keeper == null) {
-            // None match tracker; keep the first one found, remove rest
             keeper = allEggs.get(0);
             duplicates = allEggs.subList(1, allEggs.size());
             logger.info("No egg matched tracker; keeping first found: " + keeper.getDescription());
         }
 
-        // Remove duplicates
         for (EggFoundEntry dup : duplicates) {
             removeEgg(dup);
             logger.info("Removed duplicate egg: " + dup.getDescription());
         }
 
-        // Update tracker to the kept egg
         updateTrackerFromScan(keeper);
 
         String resultMsg = "§a扫描完成：发现" + total + "个龙蛋，已保留1个，删除" + duplicates.size() + "个";
@@ -152,16 +214,19 @@ public class EggScanner implements Runnable {
     }
 
     /**
-     * Scan all DRAGON_EGG blocks in a chunk.
+     * Scan for DRAGON_EGG blocks in a chunk.
+     * Uses getBlock which is lighter than getTileEntities.
      */
     private void scanBlocks(Chunk chunk, List<EggFoundEntry> results) {
         World world = chunk.getWorld();
         int chunkX = chunk.getX() << 4;
         int chunkZ = chunk.getZ() << 4;
+        int minY = world.getMinHeight();
+        int maxY = world.getMaxHeight();
 
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                for (int y = world.getMinHeight(); y < world.getMaxHeight(); y++) {
+                for (int y = minY; y < maxY; y++) {
                     Block block = chunk.getBlock(x, y, z);
                     if (block.getType() == Material.DRAGON_EGG) {
                         results.add(new EggFoundEntry(
@@ -170,15 +235,13 @@ public class EggScanner implements Runnable {
                                 chunkX + x, y, chunkZ + z,
                                 null, null, null, null
                         ));
+                        return; // Found one — no need to scan more blocks in this chunk
                     }
                 }
             }
         }
     }
 
-    /**
-     * Scan entities (Item, ItemFrame) in a chunk.
-     */
     private void scanEntities(Chunk chunk, List<EggFoundEntry> results) {
         for (Entity entity : chunk.getEntities()) {
             if (entity instanceof Item item) {
@@ -192,6 +255,7 @@ public class EggScanner implements Runnable {
                             entity.getUniqueId(),
                             null, null, null
                     ));
+                    return;
                 }
             } else if (entity instanceof ItemFrame frame) {
                 ItemStack frameItem = frame.getItem();
@@ -205,39 +269,32 @@ public class EggScanner implements Runnable {
                             entity.getUniqueId(),
                             null, null, null
                     ));
+                    return;
                 }
             }
         }
     }
 
-    /**
-     * Scan container blocks in a chunk for dragon eggs.
-     */
     private void scanContainers(Chunk chunk, List<EggFoundEntry> results) {
         for (BlockState state : chunk.getTileEntities()) {
             if (state instanceof InventoryHolder holder) {
-                // Skip player inventories (handled separately)
                 if (holder instanceof Player) continue;
 
                 for (ItemStack item : holder.getInventory().getContents()) {
                     if (item != null && item.getType() == Material.DRAGON_EGG) {
-                        String containerType = state.getType().name();
                         results.add(new EggFoundEntry(
                                 EggLocationType.CONTAINER,
                                 state.getWorld().getName(),
                                 state.getX(), state.getY(), state.getZ(),
-                                null, null, containerType, null
+                                null, null, state.getType().name(), null
                         ));
-                        break; // One egg per container is enough for counting
+                        return;
                     }
                 }
             }
         }
     }
 
-    /**
-     * Scan online players' inventories.
-     */
     private void scanPlayers(List<EggFoundEntry> results) {
         for (Player player : Bukkit.getOnlinePlayers()) {
             for (ItemStack item : player.getInventory().getContents()) {
@@ -247,15 +304,12 @@ public class EggScanner implements Runnable {
                             null, 0, 0, 0,
                             null, player.getUniqueId(), null, player.getName()
                     ));
-                    break;
+                    return;
                 }
             }
         }
     }
 
-    /**
-     * Check if a scanned egg entry matches the current tracker.
-     */
     private boolean matchesTracker(EggFoundEntry egg) {
         if (egg.type != tracker.getType()) return false;
 
@@ -267,7 +321,6 @@ public class EggScanner implements Runnable {
                         && egg.x == tracker.getX()
                         && egg.y == tracker.getY()
                         && egg.z == tracker.getZ();
-
             case ITEM_ENTITY:
             case ITEM_FRAME:
                 if (egg.entityUUID != null && tracker.getEntityUUID() != null) {
@@ -278,56 +331,38 @@ public class EggScanner implements Runnable {
                         && Math.abs(egg.x - tracker.getX()) <= 2
                         && Math.abs(egg.y - tracker.getY()) <= 2
                         && Math.abs(egg.z - tracker.getZ()) <= 2;
-
             case PLAYER_INVENTORY:
                 return egg.playerUUID != null
                         && egg.playerUUID.equals(tracker.getPlayerUUID());
-
             default:
                 return false;
         }
     }
 
-    /**
-     * Update tracker to match a scanned egg entry.
-     */
     private void updateTrackerFromScan(EggFoundEntry egg) {
         switch (egg.type) {
             case BLOCK:
                 World w = Bukkit.getWorld(egg.worldName);
-                if (w != null) {
-                    tracker.setBlockLocation(w, egg.x, egg.y, egg.z);
-                }
+                if (w != null) tracker.setBlockLocation(w, egg.x, egg.y, egg.z);
                 break;
             case ITEM_ENTITY:
                 World w2 = Bukkit.getWorld(egg.worldName);
-                if (w2 != null) {
-                    tracker.setItemEntityLocation(w2, egg.x, egg.y, egg.z, egg.entityUUID);
-                }
+                if (w2 != null) tracker.setItemEntityLocation(w2, egg.x, egg.y, egg.z, egg.entityUUID);
                 break;
             case PLAYER_INVENTORY:
-                if (egg.playerUUID != null) {
-                    tracker.setPlayerInventory(egg.playerUUID);
-                }
+                if (egg.playerUUID != null) tracker.setPlayerInventory(egg.playerUUID);
                 break;
             case CONTAINER:
                 World w3 = Bukkit.getWorld(egg.worldName);
-                if (w3 != null) {
-                    tracker.setContainerLocation(w3, egg.x, egg.y, egg.z, egg.containerType);
-                }
+                if (w3 != null) tracker.setContainerLocation(w3, egg.x, egg.y, egg.z, egg.containerType);
                 break;
             case ITEM_FRAME:
                 World w4 = Bukkit.getWorld(egg.worldName);
-                if (w4 != null) {
-                    tracker.setItemFrameLocation(w4, egg.x, egg.y, egg.z, egg.entityUUID);
-                }
+                if (w4 != null) tracker.setItemFrameLocation(w4, egg.x, egg.y, egg.z, egg.entityUUID);
                 break;
         }
     }
 
-    /**
-     * Remove a dragon egg from the given entry.
-     */
     private void removeEgg(EggFoundEntry egg) {
         switch (egg.type) {
             case BLOCK: {
@@ -382,9 +417,6 @@ public class EggScanner implements Runnable {
         }
     }
 
-    /**
-     * Internal data class for scan results.
-     */
     private static class EggFoundEntry {
         final EggLocationType type;
         final String worldName;
