@@ -1,0 +1,39 @@
+name: DragonEggGuard
+version: 1.0.0
+api-version: "1.20"
+main: com.xinantown.dragon.DragonEggGuard
+description: Ensures only one dragon egg exists server-wide with locate and management commands
+author: XiNanTown
+website: https://xinantown.com
+
+commands:
+  dragon:
+    description: DragonEggGuard management commands
+    usage: /dragon <locate|give|remove|scan|info>
+    aliases: [deg]
+
+permissions:
+  dragonegg.command.locate:
+    description: Allows locating the dragon egg
+    default: true
+  dragonegg.command.info:
+    description: Allows viewing dragon egg info
+    default: true
+  dragonegg.command.give:
+    description: Allows creating a dragon egg
+    default: op
+  dragonegg.command.remove:
+    description: Allows removing the dragon egg
+    default: op
+  dragonegg.command.scan:
+    description: Allows manually triggering a scan
+    default: op
+  dragonegg.admin:
+    description: Full admin access to DragonEggGuard
+    default: op
+    children:
+      dragonegg.command.give: true
+      dragonegg.command.remove: true
+      dragonegg.command.scan: true
+      dragonegg.command.locate: true
+      dragonegg.command.info: true
