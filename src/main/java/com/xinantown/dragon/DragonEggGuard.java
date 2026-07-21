@@ -51,8 +51,8 @@ public class DragonEggGuard extends JavaPlugin {
 
         getLogger().info("DragonEggGuard v1.0.0 enabled!");
         if (tracker.isTracked()) {
-            getLogger().info("Loaded existing egg tracker: " + tracker.getType()
-                    + (tracker.getWorldName() != null ? " in " + tracker.getWorldName() : ""));
+            EggLocation current = tracker.getCurrent();
+            getLogger().info("Loaded existing egg tracker: " + current.describe());
         }
     }
 

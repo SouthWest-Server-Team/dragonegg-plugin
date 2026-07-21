@@ -1,7 +1,7 @@
 package com.xinantown.dragon.command;
 
 import com.xinantown.dragon.DragonEggTracker;
-import com.xinantown.dragon.EggLocationType;
+import com.xinantown.dragon.PlayerInventoryLocation;
 import com.xinantown.dragon.scanner.EggScanner;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -99,7 +99,7 @@ public class DragonCommand implements CommandExecutor, TabCompleter {
         // Give new egg to player
         ItemStack egg = new ItemStack(Material.DRAGON_EGG);
         target.getInventory().addItem(egg);
-        tracker.setPlayerInventory(target.getUniqueId());
+        tracker.set(new PlayerInventoryLocation(target.getUniqueId()));
         sender.sendMessage("§a已给予玩家 " + target.getName() + " 一个龙蛋");
         target.sendMessage("§a你收到了一个龙蛋！");
         return true;
