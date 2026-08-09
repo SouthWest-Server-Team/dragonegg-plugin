@@ -1,6 +1,6 @@
 name: DragonEggGuard
 version: 1.0.0
-api-version: "1.20"
+api-version: '1.21.11'
 main: com.xinantown.dragon.DragonEggGuard
 description: Ensures only one dragon egg exists server-wide with locate and management commands
 author: XiNanTown
