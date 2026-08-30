@@ -1,6 +1,6 @@
 # DragonEggGuard — 全服唯一龙蛋守卫
 
-Leaves/Paper 1.20.1 轻量插件。保证全服同时只存在**一个龙蛋**。
+Leaf 1.21.11 轻量插件。保证全服同时只存在**一个龙蛋**。
 
 ## 功能
 
@@ -42,13 +42,13 @@ EggLocation (sealed interface) ← 多态化 (ADR-0001)
 ## 构建
 
 ```bash
-# 需要 JDK 17+ 和 JAVA_HOME
+# 需要 JDK 21 和 JAVA_HOME
 mvnw clean package
 # 输出: target/DragonEggGuard-1.0.0.jar
 ```
 
 ## 技术栈
 
-- Java 17
-- Paper API 1.20.1
+- Java 21
+- Leaf API 1.21.11
 - JUnit 5（25 个单元测试）
