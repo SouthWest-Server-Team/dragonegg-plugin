@@ -22,16 +22,12 @@
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
         </repository>
-        <repository>
-            <id>leaf-local-api</id>
-            <url>file:///D:/SST/server/XiNanTown/libraries/</url>
-        </repository>
     </repositories>
 
     <dependencies>
         <dependency>
-            <groupId>cn.dreeam.leaf</groupId>
-            <artifactId>leaf-api</artifactId>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
             <version>1.21.11-R0.1-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
